@@ -23,6 +23,9 @@ inline constexpr std::string_view kDefaultKeyframe = "home";
 // Size of the buffer MuJoCo writes XML load errors into.
 inline constexpr std::size_t kMjErrorBufferSize = 1024;
 
+// Joint values this far past a limit still count as inside (mink check_limits tol).
+inline constexpr double kJointLimitToleranceRad = 1e-6;
+
 // A log site inside the solve loop (500 Hz × 10 iterations) prints its 1st and
 // then every Nth occurrence.
 inline constexpr std::uint64_t kHotLoopLogEvery = 1000;

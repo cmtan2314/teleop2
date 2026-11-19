@@ -3,9 +3,10 @@
 //
 //   ik_check se3              {"a": [wxyz_xyz], "b": [wxyz_xyz]}
 //                          → {"log_a": [6], "rminus": [6], "inv_mul": [wxyz_xyz], "jlog_a": [36]}
-//   ik_check boxqp            {"H": [49 row-major], "c": [7], "lo": [7], "hi": [7]}
+//   ik_check boxqp [daqp|activeset]
+//                             {"H": [49 row-major], "c": [7], "lo": [7], "hi": [7]}
 //                          → {"x": [7], "status": "...", "iterations": n}
-//   ik_check replay <scene.xml>
+//   ik_check replay <scene.xml> [daqp|activeset] [single|threads]
 //                             {"right": [px,py,pz,qw,qx,qy,qz], "left": [...]}  (either optional)
 //                          → {"status": "...", "right": [7 joints], "left": [7 joints]}
 //     The replay runs bimanual with the default IkParams (= the dataflow yaml)
@@ -100,7 +101,23 @@ int runSe3() {
   return EXIT_SUCCESS;
 }
 
-int runBoxQp() {
+bool parseBackend(std::span<char*> args, std::size_t index, openarm_ik::QpBackend& out) {
+  if (args.size() <= index) {
+    out = openarm_ik::QpBackend::kDaqp;
+    return true;
+  }
+  const std::string_view name = args[index];
+  for (const auto backend : {openarm_ik::QpBackend::kDaqp, openarm_ik::QpBackend::kActiveSet}) {
+    if (name == openarm_ik::qpBackendName(backend)) {
+      out = backend;
+      return true;
+    }
+  }
+  logf(LogLevel::kError, "unknown QP backend '{}' (daqp | activeset)", name);
+  return false;
+}
+
+int runBoxQp(openarm_ik::QpBackend backend) {
   constexpr std::size_t kN = openarm_ik::kNumArmJoints;
   std::string line;
   while (std::getline(std::cin, line)) {
@@ -119,27 +136,28 @@ int runBoxQp() {
     const openarm_ik::BoxQpResult result =
         openarm_ik::solveBoxQp(hessian, Eigen::Map<const openarm_ik::JointVector>(c.data()),
                                Eigen::Map<const openarm_ik::JointVector>(lo.data()),
-                               Eigen::Map<const openarm_ik::JointVector>(hi.data()));
+                               Eigen::Map<const openarm_ik::JointVector>(hi.data()), backend);
     std::cout << Json{{"x", rowMajor(result.solution)},
                       {"status", openarm_ik::boxQpStatusName(result.status)},
-                      {"iterations", result.iterations}}
+                      {"iterations", result.iterations},
+                      {"exitflag", result.solver_exitflag}}
                      .dump()
               << '\n';
   }
   return EXIT_SUCCESS;
 }
 
-int runReplay(const char* xml_path) {
+int runReplay(const char* xml_path, openarm_ik::QpBackend backend,
+              openarm_ik::IkThreading threading) {
   openarm_ik::ArmKinematics::Config config;
   config.xml_path = xml_path;
-  const auto kinematics = openarm_ik::ArmKinematics::create(config);
-  if (kinematics == nullptr) {
-    return EXIT_FAILURE;  // create() logged why
-  }
   constexpr std::array<ArmSide, 2> kBimanual = {ArmSide::kRight, ArmSide::kLeft};
-  const auto solver = openarm_ik::IkSolver::create(*kinematics, {}, kBimanual);
+  openarm_ik::IkParams params;
+  params.qp_backend = backend;
+  params.threading = threading;
+  const auto solver = openarm_ik::IkSolver::create(config, params, kBimanual);
   if (solver == nullptr) {
-    return EXIT_FAILURE;
+    return EXIT_FAILURE;  // create() logged why
   }
   std::string line;
   while (std::getline(std::cin, line)) {
@@ -176,18 +194,25 @@ int main(int argc, char** argv) {
   quest_vr::setMinLogLevel(LogLevel::kWarn);
   const std::span<char*> args(argv, static_cast<std::size_t>(argc));
   if (args.size() < 2) {
-    std::cerr << "usage: ik_check se3 | boxqp | replay <scene.xml>\n";
+    std::cerr << "usage: ik_check se3 | boxqp [backend] | replay <scene.xml> [backend] "
+                 "[single|threads]\n";
     return EXIT_FAILURE;
   }
   const std::string_view mode = args[1];
   if (mode == "se3") {
     return runSe3();
   }
+  openarm_ik::QpBackend backend = openarm_ik::QpBackend::kDaqp;
   if (mode == "boxqp") {
-    return runBoxQp();
+    return parseBackend(args, 2, backend) ? runBoxQp(backend) : EXIT_FAILURE;
   }
   if (mode == "replay" && args.size() >= 3) {
-    return runReplay(args[2]);
+    const bool threads = args.size() > 4 && std::string_view(args[4]) == "threads";
+    return parseBackend(args, 3, backend)
+               ? runReplay(args[2], backend,
+                           threads ? openarm_ik::IkThreading::kThreadPerArm
+                                   : openarm_ik::IkThreading::kSingleThread)
+               : EXIT_FAILURE;
   }
   logf(LogLevel::kError, "unknown mode '{}' (or missing scene.xml for replay)", mode);
   return EXIT_FAILURE;

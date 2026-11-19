@@ -152,8 +152,10 @@ bool ArmKinematics::setJointPositions(ArmSide side, const JointVector& q) {
     return false;
   }
   const ArmIndices& arm = indices(side);
-  const bool within_limits =
-      (q.array() >= arm.lower.array()).all() && (q.array() <= arm.upper.array()).all();
+  // Same tolerance as mink Configuration.check_limits(): the IK walks right
+  // up to a limit and rounding can land 1e-17 rad past it.
+  const bool within_limits = (q.array() >= arm.lower.array() - kJointLimitToleranceRad).all() &&
+                             (q.array() <= arm.upper.array() + kJointLimitToleranceRad).all();
   if (!within_limits && out_of_limits_log_.shouldLog()) {
     logf(LogLevel::kWarn,
          "setJointPositions({}): joint values outside model limits (accepted, {} time(s) so far)",

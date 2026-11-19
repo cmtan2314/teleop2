@@ -5,12 +5,17 @@
   replay  step 4: full IkSolver vs openarm_control 0.1.0 _IKSolver, tick by tick
 
 Run with the python that has openarm_control 0.1.0 + mink 1.1 + daqp:
-  /home/tan/work/ws/dora-openarm-ros2/.venv/bin/python check_ik.py <part> <ik_check> <scene.xml>
+  <venv>/bin/python check_ik.py <part> <ik_check> <scene.xml> [daqp|activeset] [single|threads] [--record <dir>]
+
+--record <dir> also writes <dir>/<part>.json.gz (inputs + python outputs), the
+golden file tests/check_golden.py replays without any python dependency.
 """
 
 import contextlib
+import gzip
 import io
 import json
+import pathlib
 import subprocess
 import sys
 
@@ -20,6 +25,19 @@ import numpy as np
 NUM_JOINTS = 7
 SIDES = ("right", "left")
 RNG = np.random.default_rng(0)
+RECORD_DIR = None  # set by --record
+REFERENCE_STACK = "openarm_control 0.1.0 + mink 1.1 + daqp (python)"
+
+
+def record_golden(part, records, expected, tol):
+    if RECORD_DIR is None:
+        return
+    path = pathlib.Path(RECORD_DIR) / f"{part}.json.gz"
+    golden = {"part": part, "reference": REFERENCE_STACK, "tol": tol,
+              "records": records, "expected": expected}
+    with gzip.open(path, "wt") as f:
+        json.dump(golden, f, separators=(",", ":"))
+    print(f"recorded {len(records)} cases → {path}")
 
 
 def run_cpp(binary, args, records):
@@ -60,8 +78,12 @@ def check_se3(binary):
     outputs = run_cpp(binary, ["se3"], records)
 
     worst = {"log": 0.0, "rminus": 0.0, "inv_mul": 0.0, "jlog": 0.0}
+    expected = []
     for rec, out in zip(records, outputs, strict=True):
         a, b = np.array(rec["a"]), np.array(rec["b"])
+        expected.append({"log_a": native.se3_log(a).tolist(), "rminus": native.se3_rminus(a, b).tolist(),
+                         "inv_mul": native.se3_inverse_multiply(a, b).tolist(),
+                         "jlog_a": native.se3_jlog(a).ravel().tolist()})
         worst["log"] = max(worst["log"], np.abs(np.array(out["log_a"]) - native.se3_log(a)).max())
         worst["rminus"] = max(worst["rminus"], np.abs(np.array(out["rminus"]) - native.se3_rminus(a, b)).max())
         ref = native.se3_inverse_multiply(a, b)
@@ -75,6 +97,7 @@ def check_se3(binary):
     # including the θ → 0 Taylor branches and θ = π.
     tol = 1e-12
     print(f"{len(records)} pose pairs (incl. θ ∈ {{0, 1e-12 … π}})")
+    record_golden("se3", records, expected, tol)
     return all([report(f"se3 {k}", v, tol) for k, v in worst.items()])
 
 
@@ -100,7 +123,7 @@ def random_boxqp():
     return h, c, lo, hi
 
 
-def check_boxqp(binary):
+def check_boxqp(binary, backend):
     import qpsolvers
 
     problems = [random_boxqp() for _ in range(3000)]
@@ -108,23 +131,26 @@ def check_boxqp(binary):
                 "lo": [x if np.isfinite(x) else (-1e300 if x < 0 else 1e300) for x in lo],
                 "hi": [x if np.isfinite(x) else (-1e300 if x < 0 else 1e300) for x in hi]}
                for h, c, lo, hi in problems]
-    outputs = run_cpp(binary, ["boxqp"], records)
+    outputs = run_cpp(binary, ["boxqp", backend], records)
 
     worst, active_total, failures = 0.0, 0, 0
+    expected = []
     for (h, c, lo, hi), out in zip(problems, outputs, strict=True):
-        if out["status"] != "optimal":
-            failures += 1
-            continue
         # Same formulation as mink: G Δq ≤ h with G = [I; -I] on the limited DOFs.
         lim = np.isfinite(lo)
         g = np.vstack([np.eye(NUM_JOINTS)[lim], -np.eye(NUM_JOINTS)[lim]])
         hv = np.hstack([hi[lim], -lo[lim]])
         ref = qpsolvers.solve_qp(h, c, g if lim.any() else None, hv if lim.any() else None, solver="daqp")
+        expected.append({"x": ref.tolist()})
+        if out["status"] != "optimal":
+            failures += 1
+            continue
         x = np.array(out["x"])
         worst = max(worst, np.abs(x - ref).max())
         active_total += int(np.sum(np.isclose(x, lo) | np.isclose(x, hi)))
     print(f"{len(problems)} QPs, {active_total} active bounds in total, {failures} not optimal")
-    return report("box QP vs DAQP", worst, 1e-9) and failures == 0
+    record_golden("boxqp", records, expected, 1e-9)
+    return report(f"box QP [{backend}] vs DAQP", worst, 1e-9) and failures == 0
 
 
 # ── step 4 ────────────────────────────────────────────────────────────────────
@@ -166,7 +192,7 @@ def make_targets(model):
     return records
 
 
-def check_replay(binary, xml):
+def check_replay(binary, xml, backend, threading):
     from openarm_control.config import ArmSetup
     from openarm_control.kinematics import IKParams, Kinematics
 
@@ -185,10 +211,12 @@ def check_replay(binary, xml):
                                    for i in range(1, NUM_JOINTS + 1)]] for s in SIDES}
 
     records = make_targets(model)
-    outputs = run_cpp(binary, ["replay", xml], records)
+    outputs = run_cpp(binary, ["replay", xml, backend, threading], records)
 
     worst, status_mismatch, solved = 0.0, 0, 0
     worst_tick = -1
+    per_joint = {s: np.zeros(NUM_JOINTS) for s in SIDES}  # max |Δq| per joint over all ticks
+    expected = []
     for t, (rec, out) in enumerate(zip(records, outputs, strict=True)):
         for s in SIDES:
             if s in rec:
@@ -202,23 +230,38 @@ def check_replay(binary, xml):
         solved += py_status == "solved"
         status_mismatch += py_status != out["status"]
         q_py = kin._ik._config.data.qpos
+        expected.append({"status": py_status, **{s: q_py[qadr[s]].tolist() for s in SIDES}})
         for s in SIDES:
-            err = np.abs(np.array(out[s]) - q_py[qadr[s]]).max()
+            diff = np.abs(np.array(out[s]) - q_py[qadr[s]])
+            per_joint[s] = np.maximum(per_joint[s], diff)
+            err = diff.max()
             if err > worst:
                 worst, worst_tick = err, t
     print(f"{len(records)} ticks, {solved} solves, {status_mismatch} status mismatches, "
           f"worst joint error at tick {worst_tick}")
-    return report("IkSolver vs openarm_control 0.1.0 (rad)", worst, 1e-8) and status_mismatch == 0
+    record_golden("replay", records, expected, 1e-8)
+    print("max |q_cpp - q_py| per joint (rad):")
+    print("        " + "".join(f"{'j' + str(i + 1):>10}" for i in range(NUM_JOINTS)))
+    for s in SIDES:
+        print(f"  {s:<6}" + "".join(f"{e:10.1e}" for e in per_joint[s]))
+    return report(f"IkSolver [{backend}, {threading}] vs openarm_control 0.1.0 (rad)", worst, 1e-8) and status_mismatch == 0
 
 
 def main() -> int:
-    if len(sys.argv) != 4 or sys.argv[1] not in ("se3", "boxqp", "replay"):
+    global RECORD_DIR
+    if "--record" in sys.argv:
+        i = sys.argv.index("--record")
+        RECORD_DIR = sys.argv[i + 1]
+        del sys.argv[i:i + 2]
+    if len(sys.argv) not in (4, 5, 6) or sys.argv[1] not in ("se3", "boxqp", "replay"):
         print(__doc__)
         return 2
-    part, binary, xml = sys.argv[1:]
+    part, binary, xml = sys.argv[1:4]
+    backend = sys.argv[4] if len(sys.argv) >= 5 else "daqp"
+    threading = sys.argv[5] if len(sys.argv) >= 6 else "single"
     ok = {"se3": lambda: check_se3(binary),
-          "boxqp": lambda: check_boxqp(binary),
-          "replay": lambda: check_replay(binary, xml)}[part]()
+          "boxqp": lambda: check_boxqp(binary, backend),
+          "replay": lambda: check_replay(binary, xml, backend, threading)}[part]()
     return 0 if ok else 1
 
 

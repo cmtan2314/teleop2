@@ -8,6 +8,10 @@
 
 #include "openarm_ik/constants.hpp"
 
+// DAQP C API (extern "C" inside). Its headers define generic macros (ACTIVE,
+// LOWER, EXIT_OPTIMAL, ...), so they are included only in this file.
+#include "api.h"
+
 namespace openarm_ik {
 namespace {
 
@@ -20,33 +24,70 @@ using FreeMatrix =
     Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, 0, kNumArmJoints, kNumArmJoints>;
 
 constexpr auto kNumVars = static_cast<Eigen::Index>(kNumArmJoints);
+constexpr int kDaqpNumVars = static_cast<int>(kNumArmJoints);
 
-}  // namespace
-
-const char* boxQpStatusName(BoxQpStatus status) {
-  switch (status) {
-    case BoxQpStatus::kOptimal:
-      return "optimal";
-    case BoxQpStatus::kInvalidInput:
-      return "invalid input";
-    case BoxQpStatus::kNotPositiveDefinite:
-      return "Hessian not positive definite";
-    case BoxQpStatus::kIterationLimit:
-      return "iteration limit";
-  }
-  return "unknown";
-}
-
-BoxQpResult solveBoxQp(const JointMatrix& hessian, const JointVector& gradient,
-                       const JointVector& lower, const JointVector& upper) {
+// ── Backend 1: DAQP ──────────────────────────────────────────────────────────
+// Same call qpsolvers makes, but with the joint limits as DAQP simple bounds
+// (ms = n, no general constraint rows) instead of mink's G = [I; −I] rows; the
+// optimum is unique, so the solution is the same.
+BoxQpResult solveDaqp(const JointMatrix& hessian, const JointVector& gradient,
+                      const JointVector& lower, const JointVector& upper) {
   BoxQpResult result;
-  // NaN bounds are rejected; ±inf bounds (unlimited joints) are fine.
-  if (!hessian.allFinite() || !gradient.allFinite() || lower.hasNaN() || upper.hasNaN() ||
-      (lower.array() > upper.array()).any()) {
-    result.status = BoxQpStatus::kInvalidInput;
+  // DAQP reads row-major buffers; copy so it can never touch the caller's data.
+  std::array<c_float, kNumArmJoints * kNumArmJoints> h_row_major{};
+  std::array<c_float, kNumArmJoints> f{};
+  std::array<c_float, kNumArmJoints> b_upper{};
+  std::array<c_float, kNumArmJoints> b_lower{};
+  std::array<int, kNumArmJoints> sense{};  // 0 = plain inequality, nothing active yet
+  for (Eigen::Index r = 0; r < kNumVars; ++r) {
+    const auto k = static_cast<std::size_t>(r);
+    for (Eigen::Index c = 0; c < kNumVars; ++c) {
+      h_row_major[k * kNumArmJoints + static_cast<std::size_t>(c)] = hessian(r, c);
+    }
+    f[k] = gradient(r);
+    // qpsolvers maps "no bound" to ±1e30 (DAQP_INF); do the same.
+    b_upper[k] = std::isfinite(upper(r)) ? upper(r) : DAQP_INF;
+    b_lower[k] = std::isfinite(lower(r)) ? lower(r) : -DAQP_INF;
+  }
+
+  DAQPProblem problem{};
+  problem.n = kDaqpNumVars;
+  problem.m = kDaqpNumVars;   // constraints in total ...
+  problem.ms = kDaqpNumVars;  // ... all of them simple bounds → A has no rows
+  problem.H = h_row_major.data();
+  problem.f = f.data();
+  problem.A = nullptr;
+  problem.bupper = b_upper.data();
+  problem.blower = b_lower.data();
+  problem.sense = sense.data();
+  problem.break_points = nullptr;
+  problem.nh = 0;
+
+  DAQPSettings settings{};
+  daqp_default_settings(&settings);  // = the python daqp.solve() defaults
+
+  JointVector x = JointVector::Zero();
+  std::array<c_float, kNumArmJoints> lambda{};
+  DAQPResult daqp_result{};
+  daqp_result.x = x.data();
+  daqp_result.lam = lambda.data();
+  daqp_quadprog(&daqp_result, &problem, &settings);
+
+  result.iterations = daqp_result.iter;
+  result.solver_exitflag = daqp_result.exitflag;
+  if (daqp_result.exitflag <= 0) {  // qpsolvers: found = exitflag > 0
+    result.status = BoxQpStatus::kSolverFailed;
     return result;
   }
+  result.status = BoxQpStatus::kOptimal;
+  result.solution = x;
+  return result;
+}
 
+// ── Backend 2: self-written primal active set ────────────────────────────────
+BoxQpResult solveActiveSet(const JointMatrix& hessian, const JointVector& gradient,
+                           const JointVector& lower, const JointVector& upper) {
+  BoxQpResult result;
   // Feasible start: x = clamp(0). Variables that had to be clamped start pinned.
   JointVector x = JointVector::Zero();
   std::array<BoundState, kNumArmJoints> state{};
@@ -157,6 +198,54 @@ BoxQpResult solveBoxQp(const JointMatrix& hessian, const JointVector& gradient,
   }
   result.status = BoxQpStatus::kIterationLimit;
   return result;
+}
+
+}  // namespace
+
+const char* qpBackendName(QpBackend backend) {
+  switch (backend) {
+    case QpBackend::kDaqp:
+      return "daqp";
+    case QpBackend::kActiveSet:
+      return "activeset";
+  }
+  return "unknown";
+}
+
+const char* boxQpStatusName(BoxQpStatus status) {
+  switch (status) {
+    case BoxQpStatus::kOptimal:
+      return "optimal";
+    case BoxQpStatus::kInvalidInput:
+      return "invalid input";
+    case BoxQpStatus::kNotPositiveDefinite:
+      return "Hessian not positive definite";
+    case BoxQpStatus::kIterationLimit:
+      return "iteration limit";
+    case BoxQpStatus::kSolverFailed:
+      return "solver failed";
+  }
+  return "unknown";
+}
+
+BoxQpResult solveBoxQp(const JointMatrix& hessian, const JointVector& gradient,
+                       const JointVector& lower, const JointVector& upper, QpBackend backend) {
+  // NaN bounds are rejected; ±inf bounds (unlimited joints) are fine.
+  if (!hessian.allFinite() || !gradient.allFinite() || lower.hasNaN() || upper.hasNaN() ||
+      (lower.array() > upper.array()).any()) {
+    BoxQpResult invalid;
+    invalid.status = BoxQpStatus::kInvalidInput;
+    return invalid;
+  }
+  switch (backend) {
+    case QpBackend::kDaqp:
+      return solveDaqp(hessian, gradient, lower, upper);
+    case QpBackend::kActiveSet:
+      return solveActiveSet(hessian, gradient, lower, upper);
+  }
+  BoxQpResult unknown;  // unreachable for a valid enum value
+  unknown.status = BoxQpStatus::kInvalidInput;
+  return unknown;
 }
 
 }  // namespace openarm_ik

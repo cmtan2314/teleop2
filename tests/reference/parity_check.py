@@ -7,9 +7,12 @@ grip engage/release, an INVALID window, a STALE window), runs it through
   * the C++ quest_replay binary
 and compares every tick.
 
-Usage: python parity_check.py <path/to/quest_replay>
+Usage: python parity_check.py <path/to/quest_replay> <dora-openarm-ros2 repo> [--record <dir>]
+
+--record <dir> also writes <dir>/quest.json.gz for tests/check_golden.py.
 """
 
+import gzip
 import json
 import pathlib
 import subprocess
@@ -20,8 +23,7 @@ import types
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-HERE = pathlib.Path(__file__).resolve().parent
-VENDOR_SRC = HERE.parent.parent / "vendor" / "dora-openarm-vr" / "src"
+VENDOR_SUBDIR = pathlib.Path("vendor") / "dora-openarm-vr" / "src"
 
 TICK_S = 0.002          # dora/timer/millis/2
 PACKET_PERIOD_S = 0.0125  # ~80 Hz headset send rate
@@ -30,13 +32,13 @@ POS_TOL_M = 1e-5        # python works in float32
 ROT_TOL_RAD = 1e-4
 
 
-def import_python_reference():
+def import_python_reference(vendor_src):
     # quest_receiver.py imports dora/rclpy/std_srvs at module level; stub them so
     # the pure-python pieces can be imported without a ROS 2 / dora runtime.
     for name in ("dora", "rclpy", "std_srvs", "std_srvs.srv"):
         sys.modules.setdefault(name, types.ModuleType(name))
     sys.modules["std_srvs.srv"].SetBool = object
-    sys.path.insert(0, str(VENDOR_SRC))
+    sys.path.insert(0, str(vendor_src))
     from dora_openarm_vr import quest_receiver
     from dora_openarm_vr.smoothing import OneEuroPoseSmoother
 
@@ -173,15 +175,30 @@ def compare(name, py_out, cpp_out) -> bool:
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
+    record_dir = None
+    if "--record" in sys.argv:
+        i = sys.argv.index("--record")
+        record_dir = sys.argv[i + 1]
+        del sys.argv[i:i + 2]
+    if len(sys.argv) != 3:
         print(__doc__)
         return 2
-    binary = sys.argv[1]
-    quest_receiver, smoother_cls = import_python_reference()
+    binary, dora_repo = sys.argv[1], pathlib.Path(sys.argv[2])
+    quest_receiver, smoother_cls = import_python_reference(dora_repo / VENDOR_SUBDIR)
     ok = True
+    scenarios = []
     for name, with_ref, seed in (("with-reference", True, 1), ("no-reference", False, 2)):
         records = generate_stream(with_ref, seed)
-        ok &= compare(name, run_python(records, quest_receiver, smoother_cls), run_cpp(records, binary))
+        expected = run_python(records, quest_receiver, smoother_cls)
+        ok &= compare(name, expected, run_cpp(records, binary))
+        scenarios.append({"name": name, "records": records, "expected": expected})
+    if record_dir is not None:
+        path = pathlib.Path(record_dir) / "quest.json.gz"
+        golden = {"part": "quest", "reference": "dora-openarm-vr quest_receiver (python, vendored)",
+                  "tol": {"pos": POS_TOL_M, "rot": ROT_TOL_RAD}, "scenarios": scenarios}
+        with gzip.open(path, "wt") as f:
+            json.dump(golden, f, separators=(",", ":"))
+        print(f"recorded {len(scenarios)} scenarios → {path}")
     return 0 if ok else 1
 
 

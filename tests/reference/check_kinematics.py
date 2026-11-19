@@ -6,10 +6,14 @@ For random joint configurations (plus q = 0 and both joint-limit corners) compar
   * TCP body Jacobian   vs mink.Configuration.get_frame_jacobian()  (arm columns)
 
 Run with the python that has openarm_control 0.1.0 + mink (the reference stack):
-  /home/tan/work/ws/dora-openarm-ros2/.venv/bin/python check_kinematics.py <ik_kinematics_dump> <scene.xml>
+  <venv>/bin/python check_kinematics.py <ik_kinematics_dump> <scene.xml> [--record <dir>]
+
+--record <dir> also writes <dir>/kinematics.json.gz for tests/check_golden.py.
 """
 
+import gzip
 import json
+import pathlib
 import subprocess
 import sys
 
@@ -55,6 +59,11 @@ def reference(model, sample):
 
 
 def main() -> int:
+    record_dir = None
+    if "--record" in sys.argv:
+        i = sys.argv.index("--record")
+        record_dir = sys.argv[i + 1]
+        del sys.argv[i:i + 2]
     if len(sys.argv) != 3:
         print(__doc__)
         return 2
@@ -71,10 +80,12 @@ def main() -> int:
     indices, outputs = json.loads(lines[0])["indices"], [json.loads(l) for l in lines[1:]]
 
     ok = True
+    expected_indices = {}
     for side in SIDES:
         ids = joint_ids(model, side)
         expected = {"qpos": model.jnt_qposadr[ids].tolist(), "dof": model.jnt_dofadr[ids].tolist(),
                     "lower": model.jnt_range[ids, 0].tolist(), "upper": model.jnt_range[ids, 1].tolist()}
+        expected_indices[side] = expected
         for key, value in expected.items():
             if not np.allclose(indices[side][key], value):
                 print(f"FAIL indices[{side}][{key}]: cpp={indices[side][key]} python={value}")
@@ -83,8 +94,11 @@ def main() -> int:
               f"tcp_body={indices[side]['tcp_body']}")
 
     worst = {"pos": 0.0, "rot": 0.0, "jac": 0.0}
+    expected = []
     for sample, cpp in zip(samples, outputs, strict=True):
         ref = reference(model, sample)
+        expected.append({side: {"pos": ref[side]["pos"].tolist(), "quat_wxyz": ref[side]["quat_wxyz"].tolist(),
+                                "jac": ref[side]["jac"].ravel().tolist()} for side in SIDES})
         for side in SIDES:
             worst["pos"] = max(worst["pos"], np.max(np.abs(np.array(cpp[side]["pos"]) - ref[side]["pos"])))
             dot = abs(float(np.dot(cpp[side]["quat_wxyz"], ref[side]["quat_wxyz"])))
@@ -93,6 +107,14 @@ def main() -> int:
             worst["jac"] = max(worst["jac"], np.max(np.abs(jac - ref[side]["jac"])))
     passed = worst["pos"] <= POS_TOL_M and worst["rot"] <= ROT_TOL and worst["jac"] <= JAC_TOL
     ok &= passed
+    if record_dir is not None:
+        path = pathlib.Path(record_dir) / "kinematics.json.gz"
+        golden = {"part": "kinematics", "reference": "mink 1.1 (python)",
+                  "tol": {"pos": POS_TOL_M, "rot": ROT_TOL, "jac": JAC_TOL},
+                  "indices": expected_indices, "records": samples, "expected": expected}
+        with gzip.open(path, "wt") as f:
+            json.dump(golden, f, separators=(",", ":"))
+        print(f"recorded {len(samples)} configs → {path}")
     print(f"{'PASS' if passed else 'FAIL'}: {len(samples)} configs x 2 arms | "
           f"max |dp|={worst['pos']:.1e} m, max (1-|q·q'|)={worst['rot']:.1e}, max |dJ|={worst['jac']:.1e}")
     return 0 if ok else 1
