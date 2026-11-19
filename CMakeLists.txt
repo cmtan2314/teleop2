@@ -17,8 +17,25 @@ set(CMAKE_INSTALL_RPATH "$ORIGIN/..")
 
 find_package(ament_cmake REQUIRED)
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
-find_package(nlohmann_json 3.10 REQUIRED)
 find_package(Threads REQUIRED)
+include(FetchContent)
+
+# ── nlohmann_json (header-only) ──────────────────────────────────────────────
+# The system package (apt nlohmann-json3-dev) when installed, otherwise the
+# official release downloaded at configure time.
+set(NLOHMANN_JSON_MIN_VERSION 3.10)
+set(NLOHMANN_JSON_FETCH_VERSION 3.11.3)
+find_package(nlohmann_json ${NLOHMANN_JSON_MIN_VERSION} QUIET)
+if(nlohmann_json_FOUND)
+  message(STATUS "nlohmann_json: system ${nlohmann_json_VERSION}")
+else()
+  message(STATUS "nlohmann_json: not installed, downloading ${NLOHMANN_JSON_FETCH_VERSION}")
+  FetchContent_Declare(nlohmann_json_release
+    URL https://github.com/nlohmann/json/releases/download/v${NLOHMANN_JSON_FETCH_VERSION}/json.tar.xz
+    URL_HASH SHA256=d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  FetchContent_MakeAvailable(nlohmann_json_release)  # defines nlohmann_json::nlohmann_json
+endif()
 
 # ── MuJoCo C API ─────────────────────────────────────────────────────────────
 # Official prebuilt release, downloaded at configure time for this machine's
@@ -44,7 +61,6 @@ else()
   endif()
   set(MUJOCO_URL "https://github.com/google-deepmind/mujoco/releases/download/${MUJOCO_VERSION}/mujoco-${MUJOCO_VERSION}-linux-${MUJOCO_ARCH}.tar.gz")
   message(STATUS "MuJoCo: ${MUJOCO_URL}")
-  include(FetchContent)
   FetchContent_Declare(mujoco_release
     URL ${MUJOCO_URL}
     URL_HASH SHA256=${MUJOCO_SHA256}
