@@ -26,7 +26,9 @@ tests/           golden-file tests; tests/reference/ holds the python scripts th
 ## Dependencies
 
 - CMake ≥ 3.22, a C++20 compiler
-- Eigen3, nlohmann_json, yaml-cpp (`sudo apt install libeigen3-dev nlohmann-json3-dev libyaml-cpp-dev`)
+- Eigen3, yaml-cpp (`sudo apt install libeigen3-dev libyaml-cpp-dev`, or `rosdep install --from-paths src --ignore-src -y`)
+- nlohmann_json ≥ 3.10: the system package when installed (`nlohmann-json3-dev`),
+  otherwise CMake downloads release 3.11.3 at configure time.
 - MuJoCo 4.0.1: downloaded by CMake at configure time from the official GitHub
   release (x86_64 or aarch64, chosen from the CPU, SHA256-checked). To use a local
   install instead: `-DMUJOCO_ROOT=<dir with include/ and lib/>`.
@@ -101,6 +103,8 @@ your own file.
 | `cmd_rate_hz` | 200 (yaml) | > 0: publish arm commands from a fixed-rate timer; 0: every tick |
 | `controller_tilt_deg` | 25 | tilt about the controller's own Y axis |
 | `wait_for_joint_states` | true | start the IK from `/joint_states` |
+| `invert_thumb_{x,y}_{left,right}` | x_left false, others true | negate a thumbstick axis before it drives the thumb (x → metacarpal, y → proximal); all false = `main.py` in git |
+| `initial_thumb_rad` | `[1.57, 0.0]` | thumb target before the first stick event |
 | `ik.qp_backend` | `daqp` | `daqp` or `activeset` (self-written) |
 | `ik.threads_per_arm` | true | solve each arm on its own thread |
 | `ik.max_iterations`, `ik.damping`, `ik.lm_damping`, `ik.posture_cost`, `ik.position_cost`, `ik.orientation_cost` | 10, 0.1, 0.01, 0.01, 1, 1 | same as the dataflow yaml |

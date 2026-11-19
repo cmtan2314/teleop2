@@ -20,7 +20,7 @@
 presets:
   # fingers curl to different depths, like fingertips settling on the flat
   # sides of a box (index shallowest, pinky deepest)
-  box: [1.57, 1.03, 0.4, 0.5, 0.6, 0.7]
+  box: [1.57, 1.03, 0.4, 0.5, 0.6, 0.6]
 
   # all four fingers wrap to the same depth, like curling around a round object
   cylinder: [1.57, 1.03, 1.1, 1.1, 1.1, 1.1]

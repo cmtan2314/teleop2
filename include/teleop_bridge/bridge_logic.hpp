@@ -66,6 +66,14 @@ struct BridgeConfig {
   // > 0: arm commands are only stored by onArmPosition and published by
   // onCommandTimer (python --cmd-rate-hz). 0: published on each IK event.
   double cmd_rate_hz = 0.0;
+  // Per hand (indexed by sideIndex): negate a thumbstick axis before it drives
+  // the thumb (x → thumb_metacarpal, y → thumb_proximal). All false and a zero
+  // initial thumb = main.py in dora-openarm-ros2 git; the Jetson's main.py
+  // negates left y, right x and right y and starts the thumb at [1.57, 0].
+  std::array<bool, openarm_ik::kNumArms> invert_thumb_x{};
+  std::array<bool, openarm_ik::kNumArms> invert_thumb_y{};
+  // Thumb target [metacarpal, proximal] (rad) before the first stick event.
+  Eigen::Vector2d initial_thumb_rad = Eigen::Vector2d::Zero();
 };
 
 // Joint names, same strings and order as main.py.

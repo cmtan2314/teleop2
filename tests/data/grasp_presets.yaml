@@ -1,0 +1,42 @@
+# Revo2 hand "fully closed" poses for the dora-to-ros2 node, passed with
+# `--grasp-presets grasp_presets.yaml` in the dataflow yamls (path relative to
+# config/, which is the node's working directory under `dora run`).
+#
+# Each preset is the 6 joint angles (rad) reached at trigger = 1.0 (fingers) /
+# thumbstick fully deflected (thumb), in this order -- the same order as
+# openarm_bringup's *_revo2_hand_controller joint list:
+#
+#   [thumb_metacarpal, thumb_proximal,
+#    index_proximal, middle_proximal, ring_proximal, pinky_proximal]
+#
+# Every finger opens at 0.0. Indices 0:2 (thumb) follow the thumbstick, 2:6
+# (the four fingers) follow the trigger. Adding a new grasp = adding an entry
+# here. Read at node start: restart the dataflow after editing (no
+# `dora build` needed).
+#
+# "box" is the original hard-coded HAND_CLOSED -- do not change it without
+# re-testing existing teleop behaviour.
+
+presets:
+  # fingers curl to different depths, like fingertips settling on the flat
+  # sides of a box (index shallowest, pinky deepest)
+  box: [1.57, 1.03, 0.4, 0.5, 0.6, 0.7]
+
+  # all four fingers wrap to the same depth, like curling around a round object
+  cylinder: [1.57, 1.03, 1.1, 1.1, 1.1, 1.1]
+
+# Switch presets from the headset: each press of `button` moves every hand in
+# `hands` (default: both) to the next preset in `order`, wrapping round
+# (box -> cylinder -> box ...). Both hands start at order[0]. The fingers ramp
+# to the new pose on the next trigger/joystick event, so pressing mid-grasp
+# does not jump. Delete this whole block to turn the button off (hands then
+# stay on the first preset).
+#
+# NOTE: the button is still published on /vr_buttons as usual. In
+# src/dora_ros2_bridge/phases.yaml `x` is the episode-start / `pick` start
+# button, so pressing it to switch grasp while recording a dataset also marks
+# an episode start.
+cycle:
+  button: x               # a | b | x | y
+  hands: [left, right]    # which hands switch on a press
+  order: [box, cylinder]  # at least 2 names from presets: above

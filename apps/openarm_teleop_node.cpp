@@ -24,6 +24,7 @@
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <atomic>
 #include <chrono>
+#include <algorithm>
 #include <cmath>
 #include <control_msgs/msg/joint_trajectory_controller_state.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -274,6 +275,28 @@ class TeleopNode : public rclcpp::Node, public teleop_bridge::BridgeOutputs {
     bridge_config.mode =
         mode == "sim" ? teleop_bridge::BridgeMode::kSim : teleop_bridge::BridgeMode::kReal;
     bridge_config.cmd_rate_hz = cmd_rate_hz;
+    for (const ArmSide side : openarm_ik::kArmSides) {
+      const std::size_t k = openarm_ik::sideIndex(side);
+      bridge_config.invert_thumb_x.at(k) = declare_parameter<bool>(
+          std::format("invert_thumb_x_{}", openarm_ik::sideName(side)), false);
+      bridge_config.invert_thumb_y.at(k) = declare_parameter<bool>(
+          std::format("invert_thumb_y_{}", openarm_ik::sideName(side)), false);
+      RCLCPP_INFO(get_logger(), "%s thumb: metacarpal closes on stick x %s, proximal on stick y %s",
+                  openarm_ik::sideName(side), bridge_config.invert_thumb_x.at(k) ? "< 0" : "> 0",
+                  bridge_config.invert_thumb_y.at(k) ? "< 0" : "> 0");
+    }
+    const auto initial_thumb = declare_parameter<std::vector<double>>(
+        "initial_thumb_rad", std::vector<double>(teleop_bridge::kNumThumbJoints, 0.0));
+    if (initial_thumb.size() != teleop_bridge::kNumThumbJoints ||
+        !std::all_of(initial_thumb.begin(), initial_thumb.end(),
+                     [](double v) { return std::isfinite(v); })) {
+      RCLCPP_FATAL(get_logger(), "initial_thumb_rad needs %zu finite values, got %zu",
+                   teleop_bridge::kNumThumbJoints, initial_thumb.size());
+      return false;
+    }
+    bridge_config.initial_thumb_rad = Eigen::Vector2d(initial_thumb[0], initial_thumb[1]);
+    RCLCPP_INFO(get_logger(), "initial thumb [metacarpal, proximal] = [%.3f, %.3f] rad",
+                initial_thumb[0], initial_thumb[1]);
     if (!presets_path.empty()) {
       const auto grasp = teleop_bridge::loadGraspConfig(presets_path);
       if (!grasp.has_value()) {

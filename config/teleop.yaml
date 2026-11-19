@@ -13,6 +13,14 @@ openarm_teleop:
     reference_cache: true        # write ~/.cache/dora_openarm_vr/reference_pose.json
     wait_for_joint_states: true  # start the IK from the robot's /joint_states
     publish_ee_pose: true
+    # Thumbstick → thumb: x drives thumb_metacarpal, y drives thumb_proximal;
+    # each closes as the (possibly negated) axis goes 0 → 1. Values below are
+    # the Jetson's main.py; all false + [0, 0] = main.py in git.
+    invert_thumb_x_left: false
+    invert_thumb_y_left: true
+    invert_thumb_x_right: true
+    invert_thumb_y_right: true
+    initial_thumb_rad: [1.57, 0.0]   # thumb target before the first stick event (MOCK_THUMB)
     ik:
       qp_backend: "daqp"         # daqp | activeset
       threads_per_arm: true

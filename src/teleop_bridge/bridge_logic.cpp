@@ -104,6 +104,7 @@ TeleopBridgeLogic::TeleopBridgeLogic(BridgeConfig config, BridgeOutputs& outputs
                                                              : config_.grasp.presets.front().name;
   for (HandState& h : hands_) {
     h.preset = start;
+    h.target.head(kNumThumb) = config_.initial_thumb_rad;  // python MOCK_THUMB
   }
   logf(LogLevel::kInfo, "bridge: mode={} cmd_rate={} ({}), hands start on preset '{}'{}",
        config_.mode == BridgeMode::kReal ? "real" : "sim", config_.cmd_rate_hz,
@@ -168,8 +169,11 @@ void TeleopBridgeLogic::rampFingers(ArmSide side) {
 
 void TeleopBridgeLogic::rampThumb(ArmSide side) {
   HandState& h = hand(side);
-  Eigen::Vector2d deflection(std::clamp(h.stick[0], 0.0, kStickMax),
-                             std::clamp(h.stick[1], 0.0, kStickMax));
+  const std::size_t k = openarm_ik::sideIndex(side);
+  const double stick_x = config_.invert_thumb_x.at(k) ? -h.stick[0] : h.stick[0];
+  const double stick_y = config_.invert_thumb_y.at(k) ? -h.stick[1] : h.stick[1];
+  Eigen::Vector2d deflection(std::clamp(stick_x, 0.0, kStickMax),
+                             std::clamp(stick_y, 0.0, kStickMax));
   const Eigen::Vector2d desired =
       deflection.cwiseProduct(presetClosed(h.preset).head<kNumThumbJoints>());
   auto thumb = h.target.head(kNumThumb);

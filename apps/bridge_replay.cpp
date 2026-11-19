@@ -3,6 +3,8 @@
 // publish (JSON lines on stdout), for tests/check_bridge.py.
 //
 // Usage: bridge_replay [--mode real|sim] [--grasp-presets FILE] [--cmd-rate-hz HZ]
+//                      [--invert-thumb-x left|right]... [--invert-thumb-y left|right]...
+//                      [--initial-thumb METACARPAL PROXIMAL]
 // Input:  {"ev": "<python input id>", "v": <value>}
 //   button_a|b|x|y (bool), trigger_left|right (float), joystick_{x,y}_{left,right}
 //   (float), left_position|right_position ([8]), cmd_timer, feedback_left|right
@@ -140,6 +142,19 @@ int main(int argc, char** argv) {
       config.grasp = *grasp;
     } else if (arg == "--cmd-rate-hz" && has_value) {
       config.cmd_rate_hz = std::stod(args[++i]);
+    } else if ((arg == "--invert-thumb-x" || arg == "--invert-thumb-y") && has_value) {
+      const std::string_view side = args[++i];
+      if (side != "left" && side != "right") {
+        logf(LogLevel::kError, "{} needs left|right, got '{}'", arg, side);
+        return EXIT_FAILURE;
+      }
+      const std::size_t k = openarm_ik::sideIndex(side == "left" ? openarm_ik::ArmSide::kLeft
+                                                                 : openarm_ik::ArmSide::kRight);
+      (arg == "--invert-thumb-x" ? config.invert_thumb_x : config.invert_thumb_y).at(k) = true;
+    } else if (arg == "--initial-thumb" && i + 2 < args.size()) {
+      const double metacarpal = std::stod(args[++i]);
+      const double proximal = std::stod(args[++i]);
+      config.initial_thumb_rad = Eigen::Vector2d(metacarpal, proximal);
     } else {
       logf(LogLevel::kError, "unknown or incomplete argument '{}'", arg);
       return EXIT_FAILURE;

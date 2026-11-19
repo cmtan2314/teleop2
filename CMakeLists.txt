@@ -191,7 +191,7 @@ if(BUILD_TESTING)
             $<TARGET_FILE:ik_kinematics_dump> ${IK_SCENE_XML})
   add_test(NAME bridge_parity
     COMMAND ${GOLDEN_CHECK} ${GOLDEN_DIR}/bridge.json.gz $<TARGET_FILE:bridge_replay>
-            --grasp-presets ${CMAKE_CURRENT_SOURCE_DIR}/config/grasp_presets.yaml)
+            --grasp-presets ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/grasp_presets.yaml)
   add_test(NAME ik_se3
     COMMAND ${GOLDEN_CHECK} ${GOLDEN_DIR}/se3.json.gz $<TARGET_FILE:ik_check> se3)
   foreach(backend daqp activeset)
