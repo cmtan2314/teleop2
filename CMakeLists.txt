@@ -12,6 +12,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)  # build/compile_commands.json for IDE Int
 
 set(PORT_WARNINGS -Wall -Wextra -Wpedantic -Wshadow -Wconversion)
 
+# Installed executables find libmujoco in <install>/lib (installed below).
+set(CMAKE_INSTALL_RPATH "$ORIGIN/..")
+
+find_package(ament_cmake REQUIRED)
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 find_package(nlohmann_json 3.10 REQUIRED)
 find_package(Threads REQUIRED)
@@ -127,56 +131,63 @@ add_executable(bridge_replay apps/bridge_replay.cpp)
 target_link_libraries(bridge_replay PRIVATE teleop_bridge nlohmann_json::nlohmann_json)
 target_compile_options(bridge_replay PRIVATE ${PORT_WARNINGS})
 
-# The node needs a sourced ROS 2 environment (source /opt/ros/jazzy/setup.bash).
-find_package(rclcpp QUIET)
-if(rclcpp_FOUND)
-  find_package(sensor_msgs REQUIRED)
-  find_package(geometry_msgs REQUIRED)
-  find_package(trajectory_msgs REQUIRED)
-  find_package(control_msgs REQUIRED)
-  add_executable(openarm_teleop_node apps/openarm_teleop_node.cpp)
-  target_link_libraries(openarm_teleop_node PRIVATE quest_vr openarm_ik teleop_bridge
-    rclcpp::rclcpp ${sensor_msgs_TARGETS} ${geometry_msgs_TARGETS}
-    ${trajectory_msgs_TARGETS} ${control_msgs_TARGETS})
-  target_compile_options(openarm_teleop_node PRIVATE ${PORT_WARNINGS})
-  # Default model_xml / grasp_presets parameters point at the copies in config/.
-  target_compile_definitions(openarm_teleop_node PRIVATE
-    OPENARM_TELEOP_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
-else()
-  message(STATUS "rclcpp not found: source /opt/ros/jazzy/setup.bash to build openarm_teleop_node")
-endif()
-
-# ── Tests (compare against the python implementations) ───────────────────────
-enable_testing()
-set(IK_SCENE_XML "${CMAKE_CURRENT_SOURCE_DIR}/config/openarm_mujoco/v1/scene.xml"
-    CACHE FILEPATH "MJCF scene used by the IK (copy of openarm_mujoco/v1)")
-# Every test replays a golden file (tests/data) recorded from the python code
-# this port replaces with tests/reference/*.py --record: standard-library
-# python only, no venv.
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
-set(GOLDEN_CHECK ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_golden.py)
-set(GOLDEN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/tests/data)
-
-add_test(NAME parity_with_python
-  COMMAND ${GOLDEN_CHECK} ${GOLDEN_DIR}/quest.json.gz $<TARGET_FILE:quest_replay>)
-add_test(NAME ik_step1_kinematics
-  COMMAND ${GOLDEN_CHECK} ${GOLDEN_DIR}/kinematics.json.gz
-          $<TARGET_FILE:ik_kinematics_dump> ${IK_SCENE_XML})
-add_test(NAME bridge_parity
-  COMMAND ${GOLDEN_CHECK} ${GOLDEN_DIR}/bridge.json.gz $<TARGET_FILE:bridge_replay>
-          --grasp-presets ${CMAKE_CURRENT_SOURCE_DIR}/config/grasp_presets.yaml)
-add_test(NAME ik_se3
-  COMMAND ${GOLDEN_CHECK} ${GOLDEN_DIR}/se3.json.gz $<TARGET_FILE:ik_check> se3)
-foreach(backend daqp activeset)
-  add_test(NAME ik_boxqp_${backend}
-    COMMAND ${GOLDEN_CHECK} ${GOLDEN_DIR}/boxqp.json.gz $<TARGET_FILE:ik_check> boxqp ${backend})
-  add_test(NAME ik_replay_${backend}
-    COMMAND ${GOLDEN_CHECK} ${GOLDEN_DIR}/replay.json.gz
-            $<TARGET_FILE:ik_check> replay ${IK_SCENE_XML} ${backend} single)
-endforeach()
-add_test(NAME ik_replay_daqp_threads
-  COMMAND ${GOLDEN_CHECK} ${GOLDEN_DIR}/replay.json.gz
-          $<TARGET_FILE:ik_check> replay ${IK_SCENE_XML} daqp threads)
+# ── ROS 2 node ───────────────────────────────────────────────────────────────
+find_package(rclcpp REQUIRED)
+find_package(ament_index_cpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(trajectory_msgs REQUIRED)
+find_package(control_msgs REQUIRED)
+add_executable(openarm_teleop_node apps/openarm_teleop_node.cpp)
+target_link_libraries(openarm_teleop_node PRIVATE quest_vr openarm_ik teleop_bridge
+  rclcpp::rclcpp ament_index_cpp::ament_index_cpp ${sensor_msgs_TARGETS}
+  ${geometry_msgs_TARGETS} ${trajectory_msgs_TARGETS} ${control_msgs_TARGETS})
+target_compile_options(openarm_teleop_node PRIVATE ${PORT_WARNINGS})
 
 add_executable(ik_bench apps/ik_bench.cpp)
 target_link_libraries(ik_bench PRIVATE openarm_ik)
+
+# ── Install (ros2 run / ros2 launch openarm_teleop_cpp ...) ──────────────────
+install(TARGETS openarm_teleop_node quest_receiver ik_bench
+        RUNTIME DESTINATION lib/${PROJECT_NAME})
+install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
+if(NOT MUJOCO_ROOT)
+  # The downloaded libmujoco lives in the build tree: ship it with the package.
+  install(FILES ${MUJOCO_LIBRARY} DESTINATION lib)
+endif()
+
+# ── Tests (compare against the python implementations) ───────────────────────
+include(CTest)  # BUILD_TESTING, set by colcon (colcon test runs these)
+if(BUILD_TESTING)
+  set(IK_SCENE_XML "${CMAKE_CURRENT_SOURCE_DIR}/config/openarm_mujoco/v1/scene.xml"
+      CACHE FILEPATH "MJCF scene used by the IK (copy of openarm_mujoco/v1)")
+  # Every test replays a golden file (tests/data) recorded from the python code
+  # this port replaces with tests/reference/*.py --record: standard-library
+  # python only, no venv.
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  set(GOLDEN_CHECK ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_golden.py)
+  set(GOLDEN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/tests/data)
+
+  add_test(NAME parity_with_python
+    COMMAND ${GOLDEN_CHECK} ${GOLDEN_DIR}/quest.json.gz $<TARGET_FILE:quest_replay>)
+  add_test(NAME ik_step1_kinematics
+    COMMAND ${GOLDEN_CHECK} ${GOLDEN_DIR}/kinematics.json.gz
+            $<TARGET_FILE:ik_kinematics_dump> ${IK_SCENE_XML})
+  add_test(NAME bridge_parity
+    COMMAND ${GOLDEN_CHECK} ${GOLDEN_DIR}/bridge.json.gz $<TARGET_FILE:bridge_replay>
+            --grasp-presets ${CMAKE_CURRENT_SOURCE_DIR}/config/grasp_presets.yaml)
+  add_test(NAME ik_se3
+    COMMAND ${GOLDEN_CHECK} ${GOLDEN_DIR}/se3.json.gz $<TARGET_FILE:ik_check> se3)
+  foreach(backend daqp activeset)
+    add_test(NAME ik_boxqp_${backend}
+      COMMAND ${GOLDEN_CHECK} ${GOLDEN_DIR}/boxqp.json.gz $<TARGET_FILE:ik_check> boxqp ${backend})
+    add_test(NAME ik_replay_${backend}
+      COMMAND ${GOLDEN_CHECK} ${GOLDEN_DIR}/replay.json.gz
+              $<TARGET_FILE:ik_check> replay ${IK_SCENE_XML} ${backend} single)
+  endforeach()
+  add_test(NAME ik_replay_daqp_threads
+    COMMAND ${GOLDEN_CHECK} ${GOLDEN_DIR}/replay.json.gz
+            $<TARGET_FILE:ik_check> replay ${IK_SCENE_XML} daqp threads)
+endif()
+
+ament_package()

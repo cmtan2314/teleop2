@@ -1,0 +1,24 @@
+# Parameters of openarm_teleop_node, same values as dora-openarm-ros2
+# config/dataflow_bridge_ros2_vr_real.yaml (LPFs are not ported).
+# model_xml / grasp_presets default to the copies in this package's config/.
+openarm_teleop:
+  ros__parameters:
+    host: "0.0.0.0"
+    port: 5006
+    tick_hz: 500.0               # receiver + IK loop (dora/timer/millis/2)
+    mode: "real"                 # real: per-arm JointTrajectory + safety ramp; sim: /joint_command
+    arms: "bimanual"             # bimanual | right | left
+    cmd_rate_hz: 200.0           # > 0: arm commands from a fixed-rate timer; 0: per tick
+    controller_tilt_deg: 25.0
+    reference_cache: true        # write ~/.cache/dora_openarm_vr/reference_pose.json
+    wait_for_joint_states: true  # start the IK from the robot's /joint_states
+    publish_ee_pose: true
+    ik:
+      qp_backend: "daqp"         # daqp | activeset
+      threads_per_arm: true
+      max_iterations: 10
+      damping: 0.1
+      lm_damping: 0.01
+      posture_cost: 0.01
+      position_cost: 1.0
+      orientation_cost: 1.0

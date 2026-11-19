@@ -1,6 +1,6 @@
 # openarm_teleop_cpp
 
-C++ port of the OpenArm VR teleoperation pipeline that runs as a Dora dataflow
+ROS 2 (Jazzy) package with a C++ port of the OpenArm VR teleoperation pipeline that runs as a Dora dataflow
 in `dora-openarm-ros2`. It replaces three python nodes with a single ROS 2 node:
 
 | Python (dora-openarm-ros2) | C++ (this repo) |
@@ -17,7 +17,8 @@ The low-pass filters of `main.py` (`--lpf-*`, `--cmd-lpf-hz`) are not ported.
 ```
 apps/            executables (ROS 2 node, replay/check harnesses, benchmark)
 include/, src/   quest_vr, openarm_ik, teleop_bridge libraries
-config/          MuJoCo model (copy of openarm_mujoco/v1) and grasp_presets.yaml
+config/          node parameters (teleop.yaml), MuJoCo model (copy of openarm_mujoco/v1), grasp_presets.yaml
+launch/          teleop.launch.py
 third_party/     DAQP 0.7.2 QP solver (C, MIT), vendored unmodified
 tests/           golden-file tests; tests/reference/ holds the python scripts that recorded them
 ```
@@ -29,17 +30,20 @@ tests/           golden-file tests; tests/reference/ holds the python scripts th
 - MuJoCo 4.0.1: downloaded by CMake at configure time from the official GitHub
   release (x86_64 or aarch64, chosen from the CPU, SHA256-checked). To use a local
   install instead: `-DMUJOCO_ROOT=<dir with include/ and lib/>`.
-- ROS 2 Jazzy, only for `openarm_teleop_node`. Without a sourced ROS 2 environment
-  everything else still builds.
+- ROS 2 Jazzy (rclcpp, ament_index_cpp, sensor/geometry/trajectory/control_msgs)
 
 ## Build and test
 
+Clone into the `src/` of a colcon workspace (for example `ws/src/openarm_teleop_cpp`), then:
+
 ```bash
 source /opt/ros/jazzy/setup.bash
-cmake -S . -B build
-cmake --build build -j
-ctest --test-dir build
+colcon build --packages-select openarm_teleop_cpp
+colcon test --packages-select openarm_teleop_cpp && colcon test-result --verbose
 ```
+
+The downloaded `libmujoco.so.4.0.1` is installed into `install/openarm_teleop_cpp/lib`
+next to the node.
 
 Each test feeds recorded inputs to a C++ harness and compares the result against
 the output of the original python code (`tests/data/*.json.gz`). The tests need
@@ -60,10 +64,31 @@ To re-record a golden file, run the matching `tests/reference/*.py` script with
 
 ## Run
 
+Start the robot first, then the node, then the Quest app. Stop the dora
+dataflow before starting the node, because both use UDP port 5006 and publish
+to the same controllers.
+
 ```bash
-source /opt/ros/jazzy/setup.bash
-./build/openarm_teleop_node --ros-args -p mode:=real -p arms:=bimanual
+# terminal 1: robot (fake hardware first)
+ros2 launch openarm_bringup openarm.bimanual.launch.py arm_type:=v10 use_fake_hardware:=true use_fake_hand:=true
+
+# terminal 2: teleop
+source install/setup.bash
+ros2 launch openarm_teleop_cpp teleop.launch.py                 # real, bimanual, 200 Hz arm commands
+ros2 launch openarm_teleop_cpp teleop.launch.py arms:=right      # right arm only
+ros2 launch openarm_teleop_cpp teleop.launch.py mode:=sim cmd_rate_hz:=0
 ```
+
+On the Quest, send the stream to this PC's IP, port 5006. Holding grip makes
+that arm follow. In `bimanual` mode, the IK starts only after both grips are
+held. The node waits for `/joint_states` before it starts solving.
+
+Everything runs in one process (`openarm_teleop_node`) on separate threads:
+UDP receiver, control loop (receiver + IK at `tick_hz`, one IK worker per arm),
+and the ROS executor.
+
+All parameters are in `config/teleop.yaml`. Pass `params_file:=<file>` to use
+your own file.
 
 | Parameter | Default | Notes |
 |---|---|---|
@@ -73,14 +98,15 @@ source /opt/ros/jazzy/setup.bash
 | `arms` | `bimanual` | `bimanual`, `right` or `left` |
 | `model_xml` | `config/openarm_mujoco/v1/scene.xml` | |
 | `grasp_presets` | `config/grasp_presets.yaml` | |
-| `cmd_rate_hz` | 0 | > 0: publish arm commands from a fixed-rate timer |
+| `cmd_rate_hz` | 200 (yaml) | > 0: publish arm commands from a fixed-rate timer; 0: every tick |
 | `controller_tilt_deg` | 25 | tilt about the controller's own Y axis |
 | `wait_for_joint_states` | true | start the IK from `/joint_states` |
 | `ik.qp_backend` | `daqp` | `daqp` or `activeset` (self-written) |
 | `ik.threads_per_arm` | true | solve each arm on its own thread |
 | `ik.max_iterations`, `ik.damping`, `ik.lm_damping`, `ik.posture_cost`, `ik.position_cost`, `ik.orientation_cost` | 10, 0.1, 0.01, 0.01, 1, 1 | same as the dataflow yaml |
 
-`./build/ik_bench config/openarm_mujoco/v1/scene.xml` times the IK. One bimanual
+`ros2 run openarm_teleop_cpp ik_bench install/openarm_teleop_cpp/share/openarm_teleop_cpp/config/openarm_mujoco/v1/scene.xml`
+times the IK. One bimanual
 solve takes about 40 µs, compared with about 1.2 ms in python.
 
 ## Third-party licenses

@@ -21,6 +21,7 @@
 //     python they travel over the /dora_bridge/set_grip_* SetBool services).
 //
 // Run: build/openarm_teleop_node --ros-args --params-file config/teleop_real.yaml
+#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -63,9 +64,10 @@ constexpr int kMaxPort = 65535;
 constexpr auto kStatusPeriod = 1s;
 constexpr int kWaitLogThrottleMs = 2000;
 constexpr double kMicrosPerSecond = 1e6;
-// OPENARM_TELEOP_CONFIG_DIR = <source>/config, defined by CMakeLists.txt.
-constexpr const char* kDefaultModelXml = OPENARM_TELEOP_CONFIG_DIR "/openarm_mujoco/v1/scene.xml";
-constexpr const char* kDefaultGraspPresets = OPENARM_TELEOP_CONFIG_DIR "/grasp_presets.yaml";
+// Defaults for model_xml / grasp_presets, relative to this package's share dir.
+constexpr const char* kPackageName = "openarm_teleop_cpp";
+constexpr const char* kDefaultModelXmlRelative = "/config/openarm_mujoco/v1/scene.xml";
+constexpr const char* kDefaultGraspPresetsRelative = "/config/grasp_presets.yaml";
 
 const char* kTopicButtons = "/vr_buttons";
 const char* kTopicJointCommand = "/joint_command";
@@ -179,9 +181,21 @@ class TeleopNode : public rclcpp::Node, public teleop_bridge::BridgeOutputs {
     tick_hz_ = declare_parameter<double>("tick_hz", kDefaultTickHz);
     const auto mode = declare_parameter<std::string>("mode", "real");
     const auto arms = declare_parameter<std::string>("arms", "bimanual");
-    // Defaults: the copies in port_to_C++/config (path baked in by CMake).
-    const auto model_xml = declare_parameter<std::string>("model_xml", kDefaultModelXml);
-    const auto presets_path = declare_parameter<std::string>("grasp_presets", kDefaultGraspPresets);
+    // Defaults: the copies installed in share/openarm_teleop_cpp/config.
+    std::string share_dir;
+    try {
+      share_dir = ament_index_cpp::get_package_share_directory(kPackageName);
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(get_logger(),
+                  "package '%s' not found (%s): model_xml and grasp_presets have no default",
+                  kPackageName, e.what());
+    }
+    const std::string default_model_xml =
+        share_dir.empty() ? std::string() : share_dir + kDefaultModelXmlRelative;
+    const std::string default_presets =
+        share_dir.empty() ? std::string() : share_dir + kDefaultGraspPresetsRelative;
+    const auto model_xml = declare_parameter<std::string>("model_xml", default_model_xml);
+    const auto presets_path = declare_parameter<std::string>("grasp_presets", default_presets);
     const auto cmd_rate_hz = declare_parameter<double>("cmd_rate_hz", 0.0);
     const auto tilt_deg = declare_parameter<double>("controller_tilt_deg", kDefaultControllerTiltDeg);
     const auto reference_cache = declare_parameter<bool>("reference_cache", true);
@@ -212,7 +226,9 @@ class TeleopNode : public rclcpp::Node, public teleop_bridge::BridgeOutputs {
       return false;
     }
     if (model_xml.empty()) {
-      RCLCPP_FATAL(get_logger(), "parameter model_xml is empty (default: %s)", kDefaultModelXml);
+      RCLCPP_FATAL(get_logger(),
+                   "parameter model_xml is empty: source the workspace install/setup.bash "
+                   "or pass -p model_xml:=<scene.xml>");
       return false;
     }
     if (backend == "daqp") {
